@@ -181,7 +181,7 @@ impl App {
                         KeyCode::Enter => match self.cmd() {
                             Command::Quit => if self.show_help { self.show_help = false; } else { return Ok(()); },
                             Command::Help => { self.show_help = true; self.input_mode = InputMode::Normal; },
-                            cmd => self.input_mode = InputMode::Normal,
+                            _cmd => self.input_mode = InputMode::Normal,
                         },
                         KeyCode::Char(to_insert) => self.enter_char(to_insert),
                         KeyCode::Backspace => self.delete_char(),
@@ -191,7 +191,7 @@ impl App {
                         _ => {}
                     },
                     InputMode::Command => {}
-                    InputMode::Insert => todo!()
+                    InputMode::Insert => {}
                 }
             }
         }
