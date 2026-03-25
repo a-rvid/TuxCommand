@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+portable-pty = "0.9.0"
 
 [[bin]]
 name = "server"
@@ -12,3 +13,9 @@ path = "src/server/server.rs"
 [[bin]]
 name = "client"
 path = "src/client/client.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"

@@ -1,12 +1,13 @@
 use std::process::{ChildStdin, Command, Stdio};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex, mpsc};
+use portable_pty::{CommandBuilder, native_pty_system, PtySize};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::io::AsRawFd;
 use std::thread;
 
 pub struct Session {
-    stdin: ChildStdin,
+    master: Box<dyn portable_pty::MasterPty + Send>,
     stdout_receiver: mpsc::Receiver<String>,
 }
 
@@ -15,26 +16,48 @@ type Clients = Arc<Mutex<Vec<UnixStream>>>;
 
 impl Session {
     pub fn spawn() -> Session {
-        let mut child = Command::new("/bin/bash")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to spawn shell");
+        let pty_system = native_pty_system();
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        // Optional: detect terminal size, fallback to 24x80
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
 
+        // Open PTY
+        let pair = pty_system.openpty(size).expect("Failed to open PTY");
+
+        // Spawn the shell in the slave PTY
+        let _child = pair.slave
+            .spawn_command(CommandBuilder::new("/bin/bash"))
+            .expect("Failed to spawn shell");
+
+        let master = pair.master;
+
+        // Channel to forward lines from the PTY
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let _ = tx.send(line);
+
+        // Thread to read from the master PTY
+        thread::spawn({
+            let mut reader = master.try_clone_reader().unwrap();
+            move || {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                            let _ = tx.send(s);
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         });
 
-        Session { stdin, stdout_receiver: rx }
+        Session { master, stdout_receiver: rx }
     }
 }
 
@@ -53,8 +76,11 @@ fn handle_connection(stream: UnixStream, sessions: Sessions, clients: Clients, a
                 let sessions_guard = sessions.lock().unwrap();
                 let idx = *active_session.lock().unwrap();
                 if let Some(session) = sessions_guard.get(idx) {
-                    let _ = writeln!(&session.stdin, "{}", line);
+                if let Ok(mut writer) = session.master.take_writer() {
+                    let _ = writeln!(writer, "{}", line);
+                    let _ = writer.flush();
                 }
+            }
             }
             Err(_) => break,
         }
@@ -96,6 +122,7 @@ pub fn server(socket_path: &str) {
                 let s_clone = sessions.clone();
                 let c_clone = clients.clone();
                 let a_clone = active_session.clone();
+                println!("Connection received");
                 thread::spawn(move || handle_connection(stream, s_clone, c_clone, a_clone));
             }
             Err(e) => eprintln!("Connection failed: {}", e),
