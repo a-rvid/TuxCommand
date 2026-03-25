@@ -5,7 +5,7 @@
 
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Position};
+use ratatui::layout::{Rect, Constraint, Layout, Position};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
@@ -273,5 +273,35 @@ impl App {
             });
 
         frame.render_widget(input, input_area);
+
+        if self.show_help {
+            let area = centered_rect(60, 40, frame.area());
+
+            let help = Paragraph::new(
+                "Welcome to TuxMux\nTuxMux is a simple terminal multiplexer for shells.\nTuxMux tries to emulate vim bindings.\n\n:h | :help - Show this help message\n:q | :quit - Quit TuxMux (or close overlay)\ni - Insert mode\n\nPress Esc to switch to normal mode.\n",
+            )
+            .block(Block::bordered().title("Help"))
+            .style(Style::default().bg(Color::Black));
+
+            frame.render_widget(help, area);
+        }
     }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ]);
+
+    let horizontal = Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ]);
+
+    let [_, middle, _] = vertical.areas(area);
+    let [_, center, _] = horizontal.areas(middle);
+    center
 }
