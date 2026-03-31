@@ -167,7 +167,7 @@ impl App {
         return cmd
     }
 
-    fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn run(mut self, terminal: &mut DefaultTerminal, shell: usize) -> Result<()> {
         loop {
             terminal.draw(|frame| self.render(frame))?;
 
@@ -252,7 +252,7 @@ impl App {
                 ListItem::new(content)
             })
             .collect();
-        let messages = List::new(messages).block(Block::bordered().title("Client"));
+        let messages = List::new(messages).block(Block::bordered().title(format!("Client {}", shell)));
         frame.render_widget(messages, messages_area);
 
         let (msg, style) = match self.input_mode {
