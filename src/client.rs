@@ -1,5 +1,5 @@
 use tokio::net::UnixStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use std::time::Duration;
 use std::env::args;
@@ -24,15 +24,16 @@ async fn main() -> Result<()> {
     let (tx_out, mut rx_out) = mpsc::channel::<String>(100);
 
     tokio::spawn(async move {
-        let mut buf = [0u8; 4096];
+        let mut r = BufReader::new(r);
+        let mut line = String::new();
         loop {
-            match r.read(&mut buf).await {
+            match r.read_line(&mut line).await {
                 Ok(0) => break,
-                Ok(n) => {
-                    let s = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if tx_in.send(s).await.is_err() {
+                Ok(_) => {
+                    if tx_in.send(line.clone()).await.is_err() {
                         break;
                     }
+                    line.clear();
                 }
                 Err(_) => break,
             }
@@ -261,14 +262,16 @@ impl App {
             )),
             InputMode::Insert => {} 
         }
-
+                
         let messages: Vec<ListItem> = self
             .messages
             .iter()
             .enumerate()
-            .map(|(i, m)| {
-                let content = Line::from(Span::raw(format!("{i}: {m}")));
-                ListItem::new(content)
+            .flat_map(|(i, m)| {
+                m.lines().enumerate().map(move |(j, line)| {
+                    let content = Line::from(Span::raw(format!("{i}.{j}: {line}")));
+                    ListItem::new(content)
+                })
             })
             .collect();
         let messages = List::new(messages).block(Block::bordered().title(format!("Client {}", shell)));

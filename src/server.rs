@@ -9,12 +9,6 @@ use std::path::Path;
 struct Args {
     #[arg(short = 's', long = "socket", default_value = "/tmp/tuxmux.sock")]
     socket: String,
-    #[arg(short = 'p', long = "port", default_value = "4444")]
-    port: u16,
-    #[arg(short = 'a', long = "address", default_value = "0.0.0.0")]
-    address: String,
-    #[arg(short = 'b', long = "bind", default_value = "127.0.0.1:4321")]
-    bind: String, // optional: remote bind server to connect to
 }
 
 type TcpWriters = Arc<Mutex<Vec<tokio::net::tcp::OwnedWriteHalf>>>;
@@ -23,7 +17,14 @@ type UnixWriters = Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>;
 /// Here we signal to the client which type of message it is.
 const STDOUT: u8 = 0x01;
 const POPUP: u8 = 0x02;
-const MOTD: u8 = 0x03;
+const MOTD: &[u8] = b"Welcome to TuxMux!\n
+https://github.com/a-rvid/tuxmux/\n
+\n
+type  :h | :help<ENTER>      if you are new        \n
+type  :q | :quit<ENTER>      to exit               \n,
+type  :a | :all<ENTER>       to send to all clients\n
+type  i<ENTER>               to enter insert mode  \n
+type  Escape<ENTER>          to enter normal mode  \n";
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -38,9 +39,9 @@ async fn main() -> std::io::Result<()> {
     }
 
     // --- TCP listener (reverse shells connect here) ---
-    let tcp_listener = TcpListener::bind(format!("{}:{}", args.address, args.port)).await?;
-    let tcp_writers_clone = tcp_writers.clone();
-    let unix_writers_clone = unix_writers.clone();
+    // let tcp_listener = TcpListener::bind(format!("{}:{}", args.address, args.port)).await?;
+    // let tcp_writers_clone = tcp_writers.clone();
+    // let unix_writers_clone = unix_writers.clone();
 
     tokio::spawn(async move {
         loop {
@@ -90,9 +91,16 @@ async fn main() -> std::io::Result<()> {
                 Ok((stream, _)) => {
                     println!("Operator connected");
                     let (mut reader, mut writer) = stream.into_split();
-                    let _ = writer.write_all(format!("{POPUP}Operator connected\n").as_bytes()).await;
-                    unix_writers_clone.lock().await.push(writer);
 
+                    let _ = writer
+                        .write_all(format!("{POPUP}Operator connected\n").as_bytes())
+                        .await;
+
+                    let _ = writer.write_all(MOTD).await;
+
+                    writer.flush().await.unwrap();
+                    unix_writers_clone.lock().await.push(writer);
+                    
                     let tcp_writers = tcp_writers_clone.clone();
 
                     tokio::spawn(async move {
@@ -122,19 +130,19 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    // --- Optional: connect to remote bind server ---
-    let tcp_writers_clone = tcp_writers.clone();
-    let bind_target = args.bind.clone();
-    tokio::spawn(async move {
-        match TcpStream::connect(&bind_target).await {
-            Ok(stream) => {
-                println!("Connected to bind server {}", bind_target);
-                let (_r, w) = stream.into_split();
-                tcp_writers_clone.lock().await.push(w);
-            }
-            Err(e) => eprintln!("Failed to connect to bind server {}: {}", bind_target, e),
-        }
-    });
+    // Connect to remote bind server
+    // let tcp_writers_clone = tcp_writers.clone();
+    // let bind_target = args.bind.clone();
+    // tokio::spawn(async move {
+    //     match TcpStream::connect(&bind_target).await {
+    //         Ok(stream) => {
+    //             println!("Connected to bind server {}", bind_target);
+    //             let (_r, w) = stream.into_split();
+    //             tcp_writers_clone.lock().await.push(w);
+    //         }
+    //         Err(e) => eprintln!("Failed to connect to bind server {}: {}", bind_target, e),
+    //     }
+    // });
 
     println!("Listening: TCP {} | UNIX {}", args.port, args.socket);
     loop {
