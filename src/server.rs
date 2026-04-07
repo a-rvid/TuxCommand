@@ -105,67 +105,47 @@ async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path.join("tuxmux.db"))?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
+    conn.execute_batch("
+        BEGIN;
 
-    // clients
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS clients (
+        CREATE TABLE IF NOT EXISTS clients (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT,
-            description TEXT,
-            public_key  BLOB    NOT NULL,
-            private_key BLOB    NOT NULL
-        )",
-        [],
-    )?;
+            public_key  BLOB NOT NULL,
+            private_key BLOB NOT NULL
+        );
 
-    // status
-    // heartbeat: epoch!
-    // privilege: user permission level
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS status (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            privilege   INTEGER,
-            client_id   INTEGER NOT NULL,
-            heartbeat   INTEGER NOT NULL,
-            status      INTEGER NOT NULL DEFAULT 0,
+        CREATE TABLE IF NOT EXISTS status (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            heartbeat INTEGER NOT NULL,
+            status    INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        );
 
-    // commands
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS commands (
+        CREATE TABLE IF NOT EXISTS commands (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id     INTEGER NOT NULL,
             session_id    TEXT    NOT NULL,
-            command_queue TEXT    NOT NULL DEFAULT '[]', -- json
+            status        TEXT    NOT NULL DEFAULT 'pending',
+            command_queue TEXT    NOT NULL DEFAULT '[]',
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+        );
 
-    // --- operators ---
-    // Authenticated operator sessions. auth_key should be a hashed token,
-    // never stored in plaintext. current_client_id is nullable (no active session).
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS operators (
+        CREATE TABLE IF NOT EXISTS operators (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            auth_key          TEXT    NOT NULL UNIQUE, 
+            auth_key          TEXT    NOT NULL UNIQUE,
             name              TEXT    NOT NULL,
             current_client_id INTEGER,
             FOREIGN KEY (current_client_id) REFERENCES clients(id) ON DELETE SET NULL
-        )",
-        [],
-    )?;
+        );
 
-    // indexes
-    // Speed up the most common lookups (client_id filters)
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_status_client   ON status(client_id);
-         CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id);
-         CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
-         CREATE INDEX IF NOT EXISTS idx_operators_key   ON operators(auth_key);",
-    )?;
+        CREATE INDEX IF NOT EXISTS idx_status_client   ON status(client_id);
+        CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id);
+        CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
+        CREATE INDEX IF NOT EXISTS idx_operators_key   ON operators(auth_key);
+
+        COMMIT;
+    ")?;
     Ok(conn)
 }
