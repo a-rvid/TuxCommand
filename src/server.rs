@@ -1,6 +1,6 @@
 use dns_server::DnsRecord;
 use permit::Permit;
-use rsa::{RsaPrivateKey, RsaPublicKey, pkcs8::EncodePrivateKey, pkcs8::EncodePublicKey};
+use rsa::{RsaPrivateKey, RsaPublicKey, pkcs8::EncodePrivateKey, pkcs8::EncodePublicKey, pkcs8::DecodePrivateKey, pkcs8::DecodePublicKey};
 use rusqlite::Connection;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -49,7 +49,7 @@ async fn main() {
 
     let conn = init_db(data).await.unwrap(); 
 
-    if !fs::try_exists(data.join("private.der")).await.unwrap() {
+    let (private_key, public_key): (RsaPrivateKey, RsaPublicKey) = if !fs::try_exists(data.join("private.der")).await.unwrap() {
         let (private_key, public_key) = generate_keypair(2048);
         let private_key_file = private_key.to_pkcs8_der().unwrap();
         let public_key_file = public_key.to_public_key_der().unwrap();
@@ -69,7 +69,12 @@ async fn main() {
         fs::set_permissions(data.join("private.der"), Permissions::from_mode(0o600))
             .await
             .unwrap();
-    }
+        (private_key, public_key)
+    } else {
+        let private_key = RsaPrivateKey::read_pkcs8_der_file(data.join("private.der")).unwrap();
+        let public_key = RsaPublicKey::read_public_key_der_file(data.join("public.der")).unwrap();
+        (private_key, public_key)
+    };
 
     let top_permit = Permit::new();
     let permit = top_permit.new_sub();
