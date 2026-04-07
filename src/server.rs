@@ -1,175 +1,73 @@
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use clap::Parser;
-use std::sync::Arc;
+use dns_server::DnsRecord;
+use tokio::fs::{create_dir, exists};
+use tokio::thread;
 use std::path::Path;
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
+use permit::Permit;
+use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use users::get_current_uid;
 
-#[derive(Parser)]
-struct Args {
-    #[arg(short = 's', long = "socket", default_value = "/tmp/tuxmux.sock")]
-    socket: String,
+fn generate_keypair() -> (RsaPrivateKey, RsaPublicKey) {
+    let mut rng = rsa::rand_core::OsRng;
+    let keypair = RsaPrivateKey::new(&mut rng, 2048).unwrap(); // 2048 bit key size
+    let public_key = keypair.to_public_key();
+    (keypair, public_key)
 }
 
-type TcpWriters = Arc<Mutex<Vec<tokio::net::tcp::OwnedWriteHalf>>>;
-type UnixWriters = Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>;
-
-/// Server to operator
-const MOTD_TYPE: u8 = 0x01;   // '1' — server MOTD sent once on connect
-const NOTIFICATION: u8 = 0x02; // '2' — transient notification
-
-/// Operator to server
-const CMD_NOTIFY: u8 = 0x01; // notification command
-
-/// MOTD
-const MOTD: &str = "Welcome to TuxMux!\\nhttps://github.com/a-rvid/tuxmux/\\n\\ntype  :h | :help<ENTER>      if you are new         \\ntype  :q | :quit<ENTER>      to exit                 \\ntype  :a | :all<ENTER>       to send to all clients \\ntype  i<ENTER>               to enter insert mode    \\ntype  Escape<ENTER>          to enter normal mode    \n";
+const DATA: &str = "/etc/tuxmux";
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let args = Args::parse();
+async fn main() {
+    let data = if let Ok(config) = std::env::var("TUXMUX_CONFIG") {
+        config
+    } else if get_current_uid() == 0 {
+        DATA.to_string()
+    } else {
+        let home = std::env::var("HOME")
+            .unwrap_or_else(|_| "/tmp".to_string());
+        format!("{home}/.tuxmux")
+    };
 
-    let tcp_writers: TcpWriters = Arc::new(Mutex::new(Vec::new()));
-    let unix_writers: UnixWriters = Arc::new(Mutex::new(Vec::new()));
+    let port: u16 = std::env::var("TUXMUX_PORT").unwrap_or_else(|_| "53".to_string()).parse().unwrap();
 
-    // Remove existing UNIX socket
-    if Path::new(&args.socket).exists() {
-        std::fs::remove_file(&args.socket)?;
+    let data = Path::new(&data);
+    if !data.exists() {
+        create_dir(data).await.unwrap();
     }
 
-    /// --- TCP listener (reverse shells connect here) ---
-    // let tcp_listener = TcpListener::bind(format!("{}:{}", args.address, args.port)).await?;
-    // let tcp_writers_clone = tcp_writers.clone();
-    // let unix_writers_clone = unix_writers.clone();
+    if !exists(data + "/private.pem").await.unwrap() {
+        let (private_key, public_key) = generate_keypair();
+        let private_key = private_key.to_pkcs1_pem().unwrap();
+        let public_key = public_key.to_pkcs1_pem().unwrap();
+        tokio::fs::write(data + "/private.pem", private_key).await.unwrap();
+        tokio::fs::write(data + "/public.pem", public_key).await.unwrap();
+    }
 
-    // tokio::spawn(async move {
-    //     loop {
-    //         match tcp_listener.accept().await {
-    //             Ok((stream, addr)) => {
-    //                 println!("Shell connected: {}", addr);
-    //                 let (mut reader, writer) = stream.into_split();
-    //                 tcp_writers_clone.lock().await.push(writer);
-
-    //                 let unix_writers = unix_writers_clone.clone();
-
-    //                 tokio::spawn(async move {
-    //                     let mut buf = [0u8; 4096];
-    //                     loop {
-    //                         match reader.read(&mut buf).await {
-    //                             Ok(0) => break,
-    //                             Ok(n) => {
-    //                                 let mut u = unix_writers.lock().await;
-    //                                 let mut i = 0;
-    //                                 while i < u.len() {
-    //                                     if u[i].write_all(&buf[..n]).await.is_err() {
-    //                                         u.swap_remove(i);
-    //                                     } else {
-    //                                         i += 1;
-    //                                     }
-    //                                 }
-    //                             }
-    //                             Err(_) => break,
-    //                         }
-    //                     }
-    //                     println!("Shell disconnected");
-    //                 });
-    //             }
-    //             Err(e) => eprintln!("TCP accept error: {}", e),
-    //         }
-    //     }
-    // });
-
-    /// --- UNIX listener (operators connect here) ---
-    let unix_listener = UnixListener::bind(&args.socket)?;
-    println!("Listening: unix://{}", args.socket);
-    let tcp_writers_clone = tcp_writers.clone();
-    let unix_writers_clone = unix_writers.clone();
-
-    tokio::spawn(async move {
-        loop {
-            match unix_listener.accept().await {
-                Ok((stream, _)) => {
-                    println!("Operator connected");
-                    let (mut reader, mut writer) = stream.into_split();
-
-                    let _ = writer
-                        .write_all(format!("{NOTIFICATION}Operator connected\n").as_bytes())
-                        .await;
-
-                    let _ = writer.write_all(format!("{MOTD_TYPE}{MOTD}").as_bytes()).await;
-
-                    writer.flush().await.unwrap();
-                    unix_writers_clone.lock().await.push(writer);
-
-                    let tcp_writers = tcp_writers_clone.clone();
-
-                    let unix_writers = unix_writers_clone.clone();
-
-                    tokio::spawn(async move {
-                        let mut buf = [0u8; 4096];
-                        loop {
-                            match reader.read(&mut buf).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if buf[0] == CMD_NOTIFY {
-                                        // Handle notification command
-                                        let msg = String::from_utf8_lossy(&buf[1..n]).trim_end_matches('\n').to_string();
-                                        let notification = format!("{}{}\n", NOTIFICATION, msg);
-                                        println!("NOTIFY: {}", msg);
-
-                                        // Broadcast notification to all connected operators
-                                        let mut u = unix_writers.lock().await;
-                                        let mut i = 0;
-                                        while i < u.len() {
-                                            if u[i].write_all(notification.as_bytes()).await.is_err() {
-                                                u.swap_remove(i);
-                                            } else {
-                                                if u[i].flush().await.is_err() {
-                                                    u.swap_remove(i);
-                                                } else {
-                                                    i += 1;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // Regular output to TCP writers
-                                        let mut t = tcp_writers.lock().await;
-                                        let mut i = 0;
-                                        while i < t.len() {
-                                            if t[i].write_all(&buf[..n]).await.is_err() {
-                                                t.swap_remove(i);
-                                            } else {
-                                                i += 1;
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        println!("Operator disconnected");
-                    });
-                }
-                Err(e) => eprintln!("UNIX accept error: {}", e),
-            }
-        }
+    let top_permit = Permit::new();
+    let permit = top_permit.new_sub();
+    std::thread::spawn(move || {
+        Signals::new([SIGINT, SIGTERM]).unwrap().forever().next().unwrap();
+        drop(top_permit);
     });
 
-    // Connect to remote bind server
-    // let tcp_writers_clone = tcp_writers.clone();
-    // let bind_target = args.bind.clone();
-    // tokio::spawn(async move {
-    //     match TcpStream::connect(&bind_target).await {
-    //         Ok(stream) => {
-    //             println!("Connected to bind server {}", bind_target);
-    //             let (_r, w) = stream.into_split();
-    //             tcp_writers_clone.lock().await.push(w);
-    //         }
-    //         Err(e) => eprintln!("Failed to connect to bind server {}: {}", bind_target, e),
-    //     }
-    // });
+    let records = vec![
+        DnsRecord::new_txt("example.com", "Hello, world!").unwrap(),
+        DnsRecord::new_aaaa("example.com", "::1").unwrap(),
+        DnsRecord::new_a("example.com", "0.0.0.0").unwrap(),
+        DnsRecord::new_cname("cname.example.com", "example.com").unwrap(),
+    ];
 
-    // println!("Listening: TCP {} UNIX {}", args.socket);
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-    }
+    println!(r" /_  __/_  ___  __/  |/  /_  ___  __
+  / / / / / / |/_/ /|_/ / / / / |/_/
+ / / / /_/ />  </ /  / / /_/ />  <  
+/_/  \__,_/_/|_/_/  /_/\__,_/_/|_|  ");
+    println!("TuxMux, Config directory: {}", data.display());
+    println!("Starting DNS server on port {}", port);
+
+    dns_server::Builder::new_port(port)
+        .unwrap()
+        .with_permit(permit)
+        .serve_static(&records)
+        .unwrap();
 }
