@@ -1,4 +1,3 @@
-#![feature(allocator_api)]
 #![no_std]
 #![no_main]
 
@@ -12,7 +11,7 @@ mod hex;
 
 extern crate alloc;
 
-use talc::{*, source::Claim};
+use talc::{*, source::Claim}; // I have not researched much about this allocator, might switch later.
 use sha2::{Digest, Sha256};
 use spinning_top::RawSpinlock;
 
@@ -24,10 +23,10 @@ static TALC: TalcLock<spinning_top::RawSpinlock, Claim> = TalcLock::new(unsafe {
     Claim::array(&raw mut INITIAL_HEAP)
 });
 
-#[cfg(not(panic = "immediate-abort"))]
+#[cfg(all(not(panic = "immediate-abort"), not(test)))]
 use core::panic::PanicInfo;
 
-#[cfg(not(panic = "immediate-abort"))]
+#[cfg(all(not(panic = "immediate-abort"), not(test)))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
@@ -35,16 +34,18 @@ fn panic(_info: &PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn main() -> u8 {
-    #[cfg(debug_assertions)]
-    {
-        let string: &str = "test";
-        let hex = hex::encode(string.as_bytes());
-        println!("sha256 test: {:?}", hex::encode(Sha256::digest(string.as_bytes())));
-        println!("hex test: {:?}", hex);
-        println!("Tuxmux client, do not use in production\n{}", string);
-        for i in 0..5 {
-            println!("int loop {}", i);
-        }
-    }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::hex;
+    use sha2::{Digest, Sha256};
+
+    const STRING: &str = "test";
+
+    #[test]
+    fn test_hex_sha256() { // tests sha256 and hex encoding
+        assert_eq!("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", hex::encode(Sha256::digest(STRING.as_bytes())));
+    }
 }
