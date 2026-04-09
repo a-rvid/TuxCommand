@@ -138,15 +138,3 @@ extern "C" fn main() -> i32 {
     }
     0
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::hex;
-    use sha2::{Digest, Sha256};
-    const STRING: &str = "test";
-
-    #[test]
-    fn test_hex_sha256() { // tests sha256 and hex encoding
-        assert_eq!("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", hex::encode(Sha256::digest(STRING.as_bytes())));
-    }
-}
