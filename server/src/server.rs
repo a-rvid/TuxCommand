@@ -1,13 +1,18 @@
-use dns_server::DnsRecord;
-use permit::Permit;
-use x25519_dalek::{StaticSecret, SharedSecret, PublicKey};
 use rusqlite::Connection;
-use signal_hook::consts::signal::{SIGINT, SIGTERM};
-use signal_hook::iterator::Signals;
 use std::path::Path;
+use x25519_dalek::{StaticSecret, SharedSecret, PublicKey};
 use tokio::fs;
 use std::os::unix::prelude::PermissionsExt;
 use users::get_current_uid;
+
+use hickory_proto::op::Message;
+use hickory_proto::rr::{RecordType, RData, Record};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::str::FromStr;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
 
 /// Config file
 const DATA: &str = "/etc/tuxmux";
@@ -33,26 +38,8 @@ impl Keypair {
     }
 }
 
-// fn generate_keypair() -> (StaticSecret, PublicKey) {
-//     let mut csprng = CryptoRng;
-//     let secret = StaticSecret::new(&mut csprng);
-//     let public = PublicKey::from(&secret);
-//     (secret, public)
-// }
-
 #[tokio::main]
-async fn main() {
-    let top_permit = Permit::new();
-    let permit = top_permit.new_sub();
-    std::thread::spawn(move || {
-        Signals::new([SIGINT, SIGTERM])
-            .unwrap()
-            .forever()
-            .next()
-            .unwrap();
-        drop(top_permit);
-    });
-
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = if let Ok(config) = std::env::var("TUXMUX_CONFIG") {
         config
     } else if get_current_uid() == 0 {
@@ -93,24 +80,60 @@ async fn main() {
         fs::set_permissions(data.join("public.key"), PermissionsExt::from_mode(0o600)).await.unwrap();
         keypair
     };
-    let records = vec![
-        DnsRecord::new_txt("example.com", "Hello, world!").unwrap(),
-        DnsRecord::new_aaaa("example.com", "::1").unwrap(),
-        DnsRecord::new_a("example.com", "0.0.0.0").unwrap(),
-        DnsRecord::new_cname("cname.example.com", "example.com").unwrap(),
-    ];
-
+    
     println!("{}", SPLASH); // TUXMUX splash
     println!("Config directory: {}", data.display());
-    println!("Starting DNS server on port {}", port);
 
-    dns_server::Builder::new_port(port)
-        .unwrap()
-        .with_permit(permit)
-        .serve_static(&records)
-        .unwrap();
+    let socket = UdpSocket::bind(SocketAddr::from_str(format!("0.0.0.0:{}", port).as_str())?).await?;
+    println!("Listening on 0.0.0.0:{}", port);
+    let cache = Arc::new(Mutex::new(load_from_db().await?));
+    let cache_clone = cache.clone();
+
+    // Update loop
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            let records = load_from_db().await.unwrap_or_default();
+            *cache_clone.lock().await = records;
+        }
+    });
+
+    // Request loop
+    let mut buf = vec![0u8; 4096];
+    loop {
+        let (len, peer) = socket.recv_from(&mut buf).await?;
+        println!("Received request from {}", peer);
+        let cache_guard = cache.lock().await;
+        let resp = build_response(&buf[..len], &*cache_guard)?;
+        socket.send_to(&resp, &peer).await?;
+    }
 }
 
+fn build_response(req: &[u8], cache: &HashMap<(String, RecordType), String>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let req_msg = Message::from_vec(req)?;
+    let mut resp = Message::new();
+    resp.set_id(req_msg.id());
+    resp.set_message_type(hickory_proto::op::MessageType::Response);
+
+    for q in req_msg.queries() {
+        resp.add_query(q.clone());
+
+        let mut name = q.name().to_utf8().to_lowercase();
+        if name.ends_with('.') { name.pop(); }
+
+        if let Some(ip) = cache.get(&(name, q.query_type())) {
+            let rdata = RData::A(hickory_proto::rr::rdata::A(ip.parse::<Ipv4Addr>()?));
+            resp.add_answer(Record::from_rdata(q.name().clone(), 300, rdata));
+        }
+    }
+    Ok(resp.to_vec()?)
+}
+
+async fn load_from_db() -> Result<HashMap<(String, RecordType), String>, Box<dyn std::error::Error>> {
+    let mut records = HashMap::new();
+    records.insert(("example.com".to_string(), RecordType::A), "192.168.0.1".to_string());
+    Ok(records)
+}
 async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path.join("tuxmux.db"))?;
     fs::set_permissions(path.join("tuxmux.db"), PermissionsExt::from_mode(0o600)).await.unwrap();
