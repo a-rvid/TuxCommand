@@ -6,6 +6,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::path::Path;
 use tokio::fs;
+use std::os::unix::prelude::PermissionsExt;
 use users::get_current_uid;
 
 /// Config file
@@ -88,6 +89,8 @@ async fn main() {
         let keypair = Keypair::generate();
         fs::write(data.join("private.key"), &keypair.private.to_bytes()).await.unwrap();
         fs::write(data.join("public.key"), &keypair.public.to_bytes()).await.unwrap();
+        fs::set_permissions(data.join("private.key"), PermissionsExt::from_mode(0o600)).await.unwrap();
+        fs::set_permissions(data.join("public.key"), PermissionsExt::from_mode(0o600)).await.unwrap();
         keypair
     };
     let records = vec![
@@ -98,7 +101,7 @@ async fn main() {
     ];
 
     println!("{}", SPLASH); // TUXMUX splash
-    println!("TuxMux, Config directory: {}", data.display());
+    println!("Config directory: {}", data.display());
     println!("Starting DNS server on port {}", port);
 
     dns_server::Builder::new_port(port)
@@ -110,6 +113,7 @@ async fn main() {
 
 async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path.join("tuxmux.db"))?;
+    fs::set_permissions(path.join("tuxmux.db"), PermissionsExt::from_mode(0o600)).await.unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     conn.execute_batch(
