@@ -1,18 +1,18 @@
 use rusqlite::Connection;
+use serde::Deserialize;
+use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
-use x25519_dalek::{StaticSecret, SharedSecret, PublicKey};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncReadExt;
-use std::os::unix::prelude::PermissionsExt;
-use users::get_current_uid;
 use toml;
-use serde::Deserialize;
+use users::get_current_uid;
+use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 use hickory_proto::op::Message;
-use hickory_proto::rr::{RecordType, RData, Record};
+use hickory_proto::rr::{RData, Record, RecordType};
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -24,7 +24,6 @@ const SPLASH: &str = r" /_  __/_  ___  __/  |/  /_  ___  __
   / / / / / / |/_/ /|_/ / / / / |/_/
  / / / /_/ />  </ /  / / /_/ />  <  
 /_/  \__,_/_/|_/_/  /_/\__,_/_/|_|";
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,14 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let conn = Arc::new(Mutex::new(init_db(data).await.unwrap()));
     let config: Config = load_config(data).await.unwrap();
-    
+
     println!("{}", SPLASH); // TUXMUX splash
     println!("Config directory: {}", data.display());
 
-    let socket = UdpSocket::bind(SocketAddr::from_str(format!("0.0.0.0:{}", port).as_str())?).await?;
+    let socket =
+        UdpSocket::bind(SocketAddr::from_str(format!("0.0.0.0:{}", port).as_str())?).await?;
     println!("Listening on 0.0.0.0:{}", port);
     println!("C2 domains: {:?}", config.domains);
-    let cache = Arc::new(Mutex::new(load_from_db(conn.clone(), config.domains.clone()).await?));
+    let cache = Arc::new(Mutex::new(
+        load_from_db(conn.clone(), config.domains.clone()).await?,
+    ));
     let cache_clone = cache.clone();
     let conn_clone = conn.clone();
 
@@ -76,7 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (len, peer) = socket.recv_from(&mut buf).await?;
         println!("Received request from {}", peer);
-        let records = load_from_db(conn_clone.clone(), config.domains.clone()).await.unwrap_or_default();
+        let records = load_from_db(conn_clone.clone(), config.domains.clone())
+            .await
+            .unwrap_or_default();
         *cache_clone.lock().await = records;
         let cache_guard = cache.lock().await;
         let resp = build_response(&buf[..len], &*cache_guard)?;
@@ -84,7 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn build_response(req: &[u8], cache: &HashMap<(String, RecordType), String>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn build_response(
+    req: &[u8],
+    cache: &HashMap<(String, RecordType), String>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let req_msg = Message::from_vec(req)?;
     let mut resp = Message::new();
     resp.set_id(req_msg.id());
@@ -94,7 +101,9 @@ fn build_response(req: &[u8], cache: &HashMap<(String, RecordType), String>) -> 
         resp.add_query(q.clone());
 
         let mut name = q.name().to_utf8().to_lowercase();
-        if name.ends_with('.') { name.pop(); }
+        if name.ends_with('.') {
+            name.pop();
+        }
 
         if let Some(ip) = cache.get(&(name, q.query_type())) {
             let rdata = RData::A(hickory_proto::rr::rdata::A(ip.parse::<Ipv4Addr>()?));
@@ -104,26 +113,36 @@ fn build_response(req: &[u8], cache: &HashMap<(String, RecordType), String>) -> 
     Ok(resp.to_vec()?)
 }
 
-async fn load_from_db(conn: Arc<Mutex<Connection>>, domains: Vec<String>) -> Result<HashMap<(String, RecordType), String>, String> {
+async fn load_from_db(
+    conn: Arc<Mutex<Connection>>,
+    domains: Vec<String>,
+) -> Result<HashMap<(String, RecordType), String>, String> {
     tokio::task::spawn_blocking(move || {
         let conn = conn.blocking_lock();
         let mut records = HashMap::new();
-        let mut stmt = conn.prepare("SELECT name, record_type, value FROM records")
+        let mut stmt = conn
+            .prepare("SELECT name, record_type, value FROM records")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, u16>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u16>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
             .map_err(|e| e.to_string())?;
 
         for row_result in rows {
             let (name, record_type_int, value) = row_result.map_err(|e| e.to_string())?;
             let record_type = RecordType::from(record_type_int);
             for domain in domains.iter() {
-                records.insert(((name.clone() + "." + domain), record_type), value.clone());
+                let key = if name.is_empty() {
+                    domain.clone()
+                } else {
+                    name.clone() + "." + domain
+                };
+                records.insert((key, record_type), value.clone());
             }
         }
 
@@ -135,12 +154,17 @@ async fn load_from_db(conn: Arc<Mutex<Connection>>, domains: Vec<String>) -> Res
 
 #[derive(Deserialize)]
 struct Config {
-   domains: Vec<String>,
-   port: Option<u16>,
+    domains: Vec<String>,
+    port: Option<u16>,
 }
 
 async fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
-    let mut file = OpenOptions::new().read(true).create(true).write(true).open(path.join("config.toml")).await?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .create(true)
+        .write(true)
+        .open(path.join("config.toml"))
+        .await?;
     let mut contents = String::new();
 
     if file.read_to_string(&mut contents).await? == 0 {
@@ -149,13 +173,15 @@ async fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> 
 
     file.read_to_string(&mut contents).await?;
     let config: Config = toml::from_str(&contents)?;
-    
+
     Ok(config)
 }
 
 async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path.join("tuxmux.db"))?;
-    fs::set_permissions(path.join("tuxmux.db"), PermissionsExt::from_mode(0o600)).await.unwrap();
+    fs::set_permissions(path.join("tuxmux.db"), PermissionsExt::from_mode(0o600))
+        .await
+        .unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     conn.execute_batch(
@@ -210,7 +236,10 @@ async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
         COMMIT;
     ",
     )?;
-    conn.execute("INSERT INTO records (name, record_type, value) VALUES (?1, ?2, ?3)", ("example.com", u16::from(RecordType::A), "127.0.0.1"))?;
+    conn.execute(
+        "INSERT INTO records (name, record_type, value) VALUES (?1, ?2, ?3)",
+        ("", u16::from(RecordType::A), "127.0.0.1"),
+    )?;
     Ok(conn)
 }
 
@@ -223,10 +252,7 @@ impl Keypair {
     fn generate() -> Self {
         let private = StaticSecret::random();
         let public = PublicKey::from(&private);
-        Self {
-            private,
-            public,
-        }
+        Self { private, public }
     }
     async fn master(data: &Path) -> Self {
         // This is the master keypair
@@ -242,10 +268,18 @@ impl Keypair {
             return Keypair { private, public };
         } else {
             let keypair = Self::generate();
-            fs::write(data.join("private.key"), &keypair.private.to_bytes()).await.unwrap();
-            fs::write(data.join("public.key"), &keypair.public.to_bytes()).await.unwrap();
-            fs::set_permissions(data.join("private.key"), PermissionsExt::from_mode(0o600)).await.unwrap();
-            fs::set_permissions(data.join("public.key"), PermissionsExt::from_mode(0o600)).await.unwrap();
+            fs::write(data.join("private.key"), &keypair.private.to_bytes())
+                .await
+                .unwrap();
+            fs::write(data.join("public.key"), &keypair.public.to_bytes())
+                .await
+                .unwrap();
+            fs::set_permissions(data.join("private.key"), PermissionsExt::from_mode(0o600))
+                .await
+                .unwrap();
+            fs::set_permissions(data.join("public.key"), PermissionsExt::from_mode(0o600))
+                .await
+                .unwrap();
             return keypair;
         };
     }
