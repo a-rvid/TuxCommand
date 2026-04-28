@@ -19,7 +19,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use log::{debug, error, log_enabled, info, Level};
+use log::{error, debug, info};
 use simple_logger;
 
 /// Config file
@@ -36,7 +36,8 @@ const SPLASH: &str = r" /_  __/_  ___  __/  |/  /_  ___  __
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    simple_logger::init_with_level(log::Level::Info).unwrap();
+    simple_logger::init_with_env().unwrap();
+    // simple_logger::init_with_level(log::Level::Info).unwrap();
     println!("{}", SPLASH); 
     
     let data = if let Ok(config) = std::env::var("TUXCMD_CONFIG") {
@@ -48,40 +49,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("{home}/.tuxcommand")
     };
 
-    let port: u16 = std::env::var("TUXCMD_PORT")
-        .unwrap_or_else(|_| "53".to_string())
-        .parse()
-        .unwrap();
-
     let data = Path::new(&data);
     if !data.exists() {
         fs::create_dir(data).await.unwrap();
     }
 
-    let keypair = Keypair::master(data);
+    let keypair = Keypair::master(data); // Keypairs will be removed, but I'll keep this here till, so I remember
 
     let conn = Arc::new(Mutex::new(init_db(data).await.unwrap()));
-    let config: Config = load_config(data).await.unwrap();
+    let config: Config = {
+        let config: Config = load_config(data).await.unwrap();
+        let p: u16 = std::env::var("TUXCMD_PORT").unwrap_or_else(|_| config.port.to_string()).parse().unwrap();
+        Config { domains: config.domains, port: p }
+     };
 
     info!("Config directory: {}", data.display());
     info!("C2 domains: {:?}", config.domains);
-    let socket: UdpSocket = match UdpSocket::bind(SocketAddr::from_str(format!("0.0.0.0:{}", port).as_str())?).await {
+    let socket: UdpSocket = match UdpSocket::bind(SocketAddr::from_str(format!("0.0.0.0:{}", config.port).as_str())?).await {
         Ok(socket) => {
-            info!("Listening on 0.0.0.0:{}", port);
+            info!("Listening on 0.0.0.0:{}", config.port);
             socket
         }
         Err(e) => {
             match e.kind() {
                 io::ErrorKind::AddrInUse => {
-                    error!("Address 0.0.0.0:{} is already in use. Is another instance of TuxCommand or a DNS server running?", port);
+                    error!("Address 0.0.0.0:{} is already in use. Is another instance of TuxCommand or a DNS server running?", config.port);
                     exit(1)
                 }
                 io::ErrorKind::PermissionDenied => {
-                    error!("Failed to bind on 0.0.0.0:{}. Do you have CAP_NET_BIND_SERVICE? (TIP: are you running as root?)", port);
+                    error!("Failed to bind on 0.0.0.0:{}. Do you have CAP_NET_BIND_SERVICE? (TIP: are you running as root?)", config.port);
                     exit(1)
                 }
                 _ => {
-                    error!("An unexpected error occurred while binding to 0.0.0.0:{}", port);
+                    error!("An unexpected error occurred while binding to 0.0.0.0:{}", config.port);
                     error!("{}", e);
                     exit(1)
                 }
@@ -110,13 +110,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u8; 4096];
     loop {
         let (len, peer) = socket.recv_from(&mut buf).await?;
-        info!("Received request from {}", peer);
+        debug!("Received request from {}", peer);
+
         let records = load_from_db(conn_clone.clone(), config.domains.clone())
             .await
             .unwrap_or_default();
+        
         *cache_clone.lock().await = records;
+        
         let cache_guard = cache.lock().await;
-        let resp = build_response(&buf[..len], &*cache_guard)?;
+        let resp = build_response(&buf[..len], &*cache_guard, &peer)?;
+        
         socket.send_to(&resp, &peer).await?;
     }
 }
@@ -124,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn build_response(
     req: &[u8],
     cache: &HashMap<(String, RecordType), String>,
+    peer: &SocketAddr,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let req_msg = Message::from_vec(req)?;
     let mut resp = Message::new();
@@ -141,6 +146,7 @@ fn build_response(
             match q.query_type() {
                 RecordType::A => {
                     let addr = val.parse::<Ipv4Addr>()?;
+                    info!("Recieved A query for {} from {}", q.name().to_string().strip_suffix('.').unwrap_or(&q.name().to_string()), peer);
                     resp.add_answer(Record::from_rdata(
                         q.name().clone(),
                         300,
@@ -155,7 +161,7 @@ fn build_response(
                     ));
                 }
                 _ => {
-                    error!("Someone sent a query with unimplemented type.");
+                    debug!("Someone ({}) sent a query with unimplemented type.", peer);
                 }
             }
         }
@@ -205,7 +211,7 @@ async fn load_from_db(
 #[derive(Deserialize)]
 struct Config {
     domains: Vec<String>,
-    port: Option<u16>,
+    port: u16,
 }
 
 async fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
