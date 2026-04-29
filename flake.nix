@@ -18,9 +18,13 @@
             clippy
             rust-analyzer
             gcc
+            lld
+            binutils
+            glibc.dev
             dnsutils
             gnumake
             git
+            musl
             sqlite
             pkg-config
             openssl
