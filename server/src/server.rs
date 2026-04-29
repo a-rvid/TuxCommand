@@ -11,7 +11,6 @@ use users::get_current_uid;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 use hickory_proto::op::Message;
-use hickory_proto::rr::RecordType::TXT;
 use hickory_proto::rr::{RData, Record, RecordType};
 use log::{debug, error, info};
 use simple_logger;

