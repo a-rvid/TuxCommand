@@ -8,6 +8,8 @@ sudo apt install cargo rustc gcc musl-tools musl-dev libsqlite3-dev pkg-config m
 ```
 There is also a nix flake for nixOS
 ```
+git clone https://github.com/a-rvid/TuxCommand/
+cd TuxCommand/server
 cd server/
 cargo build
 sudo target/debug/server
